@@ -1,0 +1,377 @@
+name: Full Stack Deployment Orchestration
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to deploy (comma-separated: deal-generator,deal-security,deal-setting,deal-webui,deal-website or "all")'
+        required: true
+        default: 'all'
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+        - prod
+        - staging
+      force_rebuild:
+        description: 'Force rebuild of all images'
+        required: false
+        default: false
+        type: boolean
+  
+  repository_dispatch:
+    types: [deploy-all, deploy-infrastructure]
+
+  schedule:
+    # Déploiement automatique quotidien à 2h du matin (maintenance)
+    - cron: '0 2 * * *'
+
+env:
+  REGISTRY: ghcr.io
+  GITHUB_USERNAME: skaouech
+  COMPOSE_FILE: docker-compose.ssl-complete.yml
+
+jobs:
+  prepare-deployment:
+    runs-on: ubuntu-latest
+    outputs:
+      services_matrix: ${{ steps.prepare.outputs.services_matrix }}
+      deploy_all: ${{ steps.prepare.outputs.deploy_all }}
+    
+    steps:
+    - name: Prepare deployment matrix
+      id: prepare
+      run: |
+        SERVICES_INPUT="${{ github.event.inputs.services || 'all' }}"
+        
+        if [[ "$SERVICES_INPUT" == "all" ]]; then
+          SERVICES='["deal-generator","deal-security","deal-setting","deal-webui","deal-website"]'
+          DEPLOY_ALL="true"
+        else
+          # Convertir la liste séparée par des virgules en JSON array
+          SERVICES=$(echo "$SERVICES_INPUT" | jq -R -s -c 'split(",") | map(select(length > 0))')
+          DEPLOY_ALL="false"
+        fi
+        
+        echo "services_matrix=$SERVICES" >> $GITHUB_OUTPUT
+        echo "deploy_all=$DEPLOY_ALL" >> $GITHUB_OUTPUT
+        echo "Services to deploy: $SERVICES"
+
+  pre-deployment-checks:
+    runs-on: ubuntu-latest
+    needs: prepare-deployment
+    
+    steps:
+    - name: Check Hostinger connectivity
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          echo "🔍 Pre-deployment checks..."
+          
+          # Vérifier l'espace disque
+          df -h /
+          
+          # Vérifier Docker
+          docker --version
+          docker-compose --version
+          
+          # Vérifier les services actuels
+          cd /opt/dealtobook
+          docker-compose -f ${{ env.COMPOSE_FILE }} ps
+          
+          echo "✅ Pre-deployment checks completed"
+
+  backup-current-state:
+    runs-on: ubuntu-latest
+    needs: [prepare-deployment, pre-deployment-checks]
+    if: needs.prepare-deployment.outputs.deploy_all == 'true'
+    
+    steps:
+    - name: Backup current deployment
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          cd /opt/dealtobook
+          
+          echo "💾 Creating deployment backup..."
+          
+          # Backup de la configuration
+          cp ${{ env.COMPOSE_FILE }} ${{ env.COMPOSE_FILE }}.backup-$(date +%Y%m%d-%H%M%S)
+          
+          # Backup des images actuelles
+          SERVICES=(${{ join(fromJSON(needs.prepare-deployment.outputs.services_matrix), ' ') }})
+          for service in "${SERVICES[@]}"; do
+            docker tag $service:latest $service:backup-$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+          done
+          
+          echo "✅ Backup completed"
+
+  pull-latest-images:
+    runs-on: ubuntu-latest
+    needs: [prepare-deployment, pre-deployment-checks]
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.prepare-deployment.outputs.services_matrix) }}
+      fail-fast: false
+    
+    steps:
+    - name: Pull latest image for ${{ matrix.service }}
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          echo "📥 Pulling latest image for ${{ matrix.service }}..."
+          
+          # Déterminer le nom de l'image basé sur le service
+          case "${{ matrix.service }}" in
+            "deal-generator")
+              IMAGE_NAME="${{ env.REGISTRY }}/${{ env.GITHUB_USERNAME }}/dealdealgenerator:latest"
+              ;;
+            "deal-security")
+              IMAGE_NAME="${{ env.REGISTRY }}/${{ env.GITHUB_USERNAME }}/dealsecurity:latest"
+              ;;
+            "deal-setting")
+              IMAGE_NAME="${{ env.REGISTRY }}/${{ env.GITHUB_USERNAME }}/dealsetting:latest"
+              ;;
+            "deal-webui")
+              IMAGE_NAME="${{ env.REGISTRY }}/${{ env.GITHUB_USERNAME }}/dealtobook-deal-webui:latest"
+              ;;
+            "deal-website")
+              IMAGE_NAME="${{ env.REGISTRY }}/${{ env.GITHUB_USERNAME }}/dealtobook-deal-website:latest"
+              ;;
+          esac
+          
+          docker pull $IMAGE_NAME || echo "⚠️ Failed to pull $IMAGE_NAME"
+
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    needs: [prepare-deployment, backup-current-state, pull-latest-images]
+    if: always() && needs.prepare-deployment.outputs.deploy_all == 'true'
+    
+    steps:
+    - name: Deploy infrastructure services
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          cd /opt/dealtobook
+          
+          echo "🏗️ Deploying infrastructure services..."
+          
+          # Démarrer les services d'infrastructure en premier
+          docker-compose -f ${{ env.COMPOSE_FILE }} up -d postgres redis zipkin prometheus grafana
+          
+          # Attendre que les services d'infrastructure soient prêts
+          sleep 30
+          
+          # Démarrer Keycloak
+          docker-compose -f ${{ env.COMPOSE_FILE }} up -d keycloak
+          
+          # Attendre Keycloak
+          sleep 45
+          
+          echo "✅ Infrastructure services deployed"
+
+  deploy-services:
+    runs-on: ubuntu-latest
+    needs: [prepare-deployment, deploy-infrastructure, pull-latest-images]
+    if: always()
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.prepare-deployment.outputs.services_matrix) }}
+      fail-fast: false
+    
+    steps:
+    - name: Deploy ${{ matrix.service }}
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          cd /opt/dealtobook
+          
+          echo "🚀 Deploying ${{ matrix.service }}..."
+          
+          # Déployer le service spécifique
+          docker-compose -f ${{ env.COMPOSE_FILE }} up -d --no-deps ${{ matrix.service }}
+          
+          echo "✅ ${{ matrix.service }} deployed"
+
+  deploy-nginx:
+    runs-on: ubuntu-latest
+    needs: [deploy-services]
+    if: always() && needs.prepare-deployment.outputs.deploy_all == 'true'
+    
+    steps:
+    - name: Deploy Nginx
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          cd /opt/dealtobook
+          
+          echo "🌐 Deploying Nginx..."
+          
+          # Déployer Nginx en dernier
+          docker-compose -f ${{ env.COMPOSE_FILE }} up -d nginx
+          
+          echo "✅ Nginx deployed"
+
+  comprehensive-health-check:
+    runs-on: ubuntu-latest
+    needs: [deploy-services, deploy-nginx]
+    if: always()
+    
+    steps:
+    - name: Comprehensive health check
+      run: |
+        echo "🏥 Running comprehensive health checks..."
+        
+        # Attendre que tous les services soient prêts
+        sleep 60
+        
+        # Health checks pour les différents services
+        SERVICES=(
+          "https://administration-dev.dealtobook.com/dealsecurity/management/health"
+          "https://administration-dev.dealtobook.com/dealdealgenerator/management/health"
+          "https://administration-dev.dealtobook.com/dealsetting/management/health"
+          "https://administration-dev.dealtobook.com"
+          "https://website-dev.dealtobook.com"
+          "https://keycloak-dev.dealtobook.com/realms/dealtobook"
+        )
+        
+        FAILED_CHECKS=0
+        
+        for url in "${SERVICES[@]}"; do
+          echo "Checking $url..."
+          if curl -f --max-time 15 --retry 3 --retry-delay 5 "$url" > /dev/null 2>&1; then
+            echo "✅ $url - OK"
+          else
+            echo "❌ $url - FAILED"
+            FAILED_CHECKS=$((FAILED_CHECKS + 1))
+          fi
+        done
+        
+        if [ $FAILED_CHECKS -eq 0 ]; then
+          echo "🎉 All health checks passed!"
+        else
+          echo "⚠️ $FAILED_CHECKS health check(s) failed"
+          exit 1
+        fi
+
+  rollback-on-failure:
+    runs-on: ubuntu-latest
+    needs: [comprehensive-health-check, backup-current-state]
+    if: failure() && needs.backup-current-state.result == 'success'
+    
+    steps:
+    - name: Rollback deployment
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          cd /opt/dealtobook
+          
+          echo "🔄 Rolling back deployment..."
+          
+          # Restaurer la configuration de backup
+          BACKUP_FILE=$(ls -t ${{ env.COMPOSE_FILE }}.backup-* | head -1)
+          if [ -f "$BACKUP_FILE" ]; then
+            cp "$BACKUP_FILE" ${{ env.COMPOSE_FILE }}
+            echo "Configuration restored from $BACKUP_FILE"
+          fi
+          
+          # Restaurer les images de backup
+          BACKUP_TAG=$(date +%Y%m%d)
+          SERVICES=(${{ join(fromJSON(needs.prepare-deployment.outputs.services_matrix), ' ') }})
+          for service in "${SERVICES[@]}"; do
+            BACKUP_IMAGE=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "$service:backup-$BACKUP_TAG" | head -1)
+            if [ -n "$BACKUP_IMAGE" ]; then
+              docker tag "$BACKUP_IMAGE" "$service:latest"
+              echo "Restored $service from backup"
+            fi
+          done
+          
+          # Redéployer avec les images de backup
+          docker-compose -f ${{ env.COMPOSE_FILE }} up -d
+          
+          echo "✅ Rollback completed"
+
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [comprehensive-health-check]
+    if: always()
+    
+    steps:
+    - name: Cleanup old resources
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOSTINGER_HOST }}
+        username: ${{ secrets.HOSTINGER_USER }}
+        key: ${{ secrets.HOSTINGER_SSH_KEY }}
+        script: |
+          echo "🧹 Cleaning up old resources..."
+          
+          # Nettoyer les images Docker inutilisées
+          docker image prune -f
+          
+          # Nettoyer les volumes inutilisés
+          docker volume prune -f
+          
+          # Garder seulement les 5 derniers backups de configuration
+          cd /opt/dealtobook
+          ls -t ${{ env.COMPOSE_FILE }}.backup-* | tail -n +6 | xargs -r rm
+          
+          # Garder seulement les 3 dernières images de backup par service
+          for service in deal-generator deal-security deal-setting deal-webui deal-website; do
+            docker images --format "table {{.Repository}}:{{.Tag}}" | grep "$service:backup-" | tail -n +4 | awk '{print $1}' | xargs -r docker rmi || true
+          done
+          
+          echo "✅ Cleanup completed"
+
+  notify-deployment-status:
+    runs-on: ubuntu-latest
+    needs: [comprehensive-health-check, rollback-on-failure, cleanup]
+    if: always()
+    
+    steps:
+    - name: Deployment status summary
+      run: |
+        echo "📊 Deployment Summary"
+        echo "===================="
+        echo "Services: ${{ github.event.inputs.services || 'all' }}"
+        echo "Environment: ${{ github.event.inputs.environment || 'prod' }}"
+        echo "Triggered by: ${{ github.event_name }}"
+        echo "Status: ${{ job.status }}"
+        echo ""
+        
+        if [[ "${{ needs.comprehensive-health-check.result }}" == "success" ]]; then
+          echo "🎉 Deployment completed successfully!"
+          echo "🌐 Applications available at:"
+          echo "  - Administration: https://administration-dev.dealtobook.com"
+          echo "  - Website: https://website-dev.dealtobook.com"
+          echo "  - Keycloak: https://keycloak-dev.dealtobook.com"
+        else
+          echo "❌ Deployment failed"
+          if [[ "${{ needs.rollback-on-failure.result }}" == "success" ]]; then
+            echo "🔄 Rollback completed successfully"
+          fi
+        fi

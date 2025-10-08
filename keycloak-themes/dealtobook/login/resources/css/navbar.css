@@ -1,0 +1,68 @@
+.profile-image {
+  height: 1.75em;
+  width: 1.75em;
+}
+.navbar {
+  position: fixed;
+  padding: 0 1rem;
+  box-shadow: 0 4px 6px -1px #000;
+  background-color: #000 !important;
+}
+.navbar ul.navbar-nav .nav-item {
+  margin-left: 0.5em;
+}
+.navbar a.nav-link {
+  font-weight: 400;
+}
+/* ========================================================================== Logo styles ========================================================================== */
+.logo-img {
+  height: 45px;
+  width: 169px;
+  display: inline-block;
+  vertical-align: middle;
+  background: url('../img/title_deal_to_book3.png') no-repeat center center;
+  background-size: contain;
+}
+.nav-title {
+  font-family: Alatsi, sans-serif;
+  font-size: 24px;
+  font-weight: 900;
+  text-transform: capitalize;
+  font-style: italic;
+  text-decoration: none;
+  line-height: 0.6em;
+  letter-spacing: 1.6px;
+  text-shadow: 3px 2px 1px rgba(204, 204, 204, 1);
+}
+.nav-link-deal {
+  margin-right: 13px;
+  font-family: cursive;
+  font-weight: 600 !important;
+  font-size: 14px;
+  font-variant: all-petite-caps;
+}
+.nav-link-deal :hover {
+  text-decoration: underline;
+  color: #77b8b3 !important;
+}
+.nav-link-deal__color {
+  color: black !important;
+}
+.nav-link-deal__color-blue {
+  color: #22b8b6 !important;
+}
+.navbar-nav {
+  display: flex !important;
+}
+.top-bar {
+  background-color: transparent;
+  text-align: center;
+  padding: 0;
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
+  z-index: 500;
+}
+ 

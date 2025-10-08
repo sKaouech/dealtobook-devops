@@ -1,0 +1,336 @@
+/* ========================================================================== 
+   SIMPLE MODERN DEALTOBOOK LOGIN THEME
+   Design épuré et professionnel inspiré de votre image
+   ========================================================================== */
+
+/* Import Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* Variables CSS */
+:root {
+    --primary-blue: #4A90E2;
+    --primary-green: #7ED321;
+    --text-dark: #2C3E50;
+    --text-light: #7F8C8D;
+    --white: #FFFFFF;
+    --light-gray: #F8F9FA;
+    --border-color: #E1E8ED;
+    --shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    --shadow-hover: 0 4px 20px rgba(0, 0, 0, 0.15);
+    --border-radius: 8px;
+    --transition: all 0.3s ease;
+}
+
+/* Reset et base */
+* {
+    box-sizing: border-box;
+}
+
+/* Background simple et propre */
+body.login-pf,
+.login-pf body,
+body {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    min-height: 100vh !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Container principal simple */
+.card-pf,
+.login-pf-page .card-pf,
+.card-pf-register {
+    background: var(--white) !important;
+    border-radius: var(--border-radius) !important;
+    box-shadow: var(--shadow) !important;
+    padding: 3rem 2.5rem !important;
+    margin: 2rem auto !important;
+    max-width: 450px !important;
+    width: 90% !important;
+    position: relative !important;
+    border: none !important;
+    border-top: none !important;
+}
+
+.card-pf:hover {
+    box-shadow: var(--shadow-hover) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Logo simple et centré */
+.login-img-logo {
+    display: flex !important;
+    justify-content: center !important;
+    margin-bottom: 2rem !important;
+    position: relative !important;
+}
+
+.login-img-logo img {
+    width: 120px !important;
+    height: auto !important;
+    object-fit: contain !important;
+}
+
+/* Titre simple */
+.label {
+    background: var(--primary-green) !important;
+    color: var(--white) !important;
+    padding: 0.75rem 1.5rem !important;
+    border-radius: 20px !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    text-align: center !important;
+    margin-bottom: 2rem !important;
+    display: inline-block !important;
+    width: auto !important;
+    position: relative !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+}
+
+.label2 {
+    display: none !important;
+}
+
+/* Formulaire épuré */
+#kc-form-wrapper {
+    margin-top: 0 !important;
+}
+
+/* Groupes de champs */
+.form-group, .pf-c-form__group {
+    margin-bottom: 1.5rem !important;
+    position: relative !important;
+}
+
+/* Labels simples */
+.pf-c-form__label, label, .form-label {
+    color: var(--text-dark) !important;
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    margin-bottom: 0.5rem !important;
+    display: block !important;
+}
+
+/* Inputs modernes et simples */
+.pf-c-form-control, 
+input[type="text"], 
+input[type="password"], 
+input[type="email"] {
+    width: 100% !important;
+    padding: 0.875rem 1rem !important;
+    border: 2px solid var(--border-color) !important;
+    border-radius: var(--border-radius) !important;
+    background: var(--white) !important;
+    font-size: 1rem !important;
+    color: var(--text-dark) !important;
+    transition: var(--transition) !important;
+    outline: none !important;
+}
+
+.pf-c-form-control:focus, 
+input:focus {
+    border-color: var(--primary-blue) !important;
+    box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.1) !important;
+}
+
+.pf-c-form-control::placeholder, 
+input::placeholder {
+    color: var(--text-light) !important;
+    opacity: 0.7 !important;
+}
+
+/* Bouton principal moderne */
+.pf-c-button.pf-m-primary, 
+input[type="submit"], 
+.btn-primary,
+button[type="submit"] {
+    background: var(--primary-blue) !important;
+    border: none !important;
+    border-radius: var(--border-radius) !important;
+    color: var(--white) !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    padding: 0.875rem 2rem !important;
+    width: 100% !important;
+    cursor: pointer !important;
+    transition: var(--transition) !important;
+    margin-top: 1rem !important;
+}
+
+.pf-c-button.pf-m-primary:hover,
+button[type="submit"]:hover {
+    background: #357ABD !important;
+    transform: translateY(-1px) !important;
+    box-shadow: var(--shadow-hover) !important;
+}
+
+/* Checkbox simple */
+.checkbox {
+    display: flex !important;
+    align-items: center !important;
+    margin: 1rem 0 !important;
+}
+
+.checkbox input[type="checkbox"] {
+    width: 18px !important;
+    height: 18px !important;
+    margin-right: 0.5rem !important;
+    accent-color: var(--primary-blue) !important;
+}
+
+.checkbox label {
+    color: var(--text-light) !important;
+    font-size: 0.9rem !important;
+    margin: 0 !important;
+}
+
+/* Liens simples */
+a {
+    color: var(--primary-blue) !important;
+    text-decoration: none !important;
+    font-weight: 500 !important;
+    transition: var(--transition) !important;
+}
+
+a:hover {
+    color: #357ABD !important;
+    text-decoration: underline !important;
+}
+
+/* Options du formulaire */
+.form-options {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    margin: 1rem 0 !important;
+}
+
+/* Messages d'erreur simples */
+.pf-c-alert {
+    background: #FFF5F5 !important;
+    border: 1px solid #FEB2B2 !important;
+    border-radius: var(--border-radius) !important;
+    padding: 0.75rem !important;
+    margin-bottom: 1rem !important;
+    color: #C53030 !important;
+    font-size: 0.9rem !important;
+}
+
+/* Section d'inscription simple */
+#kc-registration-container {
+    margin-top: 2rem !important;
+    padding-top: 2rem !important;
+    border-top: 1px solid var(--border-color) !important;
+    text-align: center !important;
+}
+
+#kc-registration p {
+    color: var(--text-light) !important;
+    margin-bottom: 1rem !important;
+}
+
+/* Boutons d'inscription */
+.register-button {
+    background: var(--light-gray) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--border-radius) !important;
+    padding: 1rem !important;
+    margin: 0.5rem !important;
+    transition: var(--transition) !important;
+    text-decoration: none !important;
+    color: var(--text-dark) !important;
+    display: inline-block !important;
+    min-width: 120px !important;
+}
+
+.register-button:hover {
+    background: var(--white) !important;
+    box-shadow: var(--shadow) !important;
+    transform: translateY(-1px) !important;
+}
+
+.register-button-title {
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    margin-top: 0.5rem !important;
+}
+
+/* Icônes simples */
+.icon-user::before { content: "👤"; font-size: 1rem; }
+.icon-lock::before { content: "🔒"; font-size: 1rem; }
+.icon-eye::before { content: "👁"; font-size: 1rem; }
+.icon-eye-slash::before { content: "🙈"; font-size: 1rem; }
+.icon-signin::before { content: "→"; font-size: 1rem; font-weight: bold; }
+.icon-user-plus::before { content: "+"; font-size: 1rem; font-weight: bold; }
+
+/* Toggle password simple */
+.password-toggle {
+    position: absolute !important;
+    right: 1rem !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    background: none !important;
+    border: none !important;
+    color: var(--text-light) !important;
+    cursor: pointer !important;
+    padding: 0.25rem !important;
+}
+
+/* Responsive simple */
+@media (max-width: 768px) {
+    .card-pf,
+    .login-pf-page .card-pf,
+    .card-pf-register {
+        margin: 1rem !important;
+        padding: 2rem 1.5rem !important;
+        width: calc(100% - 2rem) !important;
+    }
+    
+    .register-button {
+        display: block !important;
+        width: 100% !important;
+        margin: 0.5rem 0 !important;
+    }
+}
+
+@media (min-width: 768px) {
+    .card-pf,
+    .login-pf-page .card-pf,
+    .card-pf-register {
+        max-width: 500px !important;
+    }
+}
+
+/* Animation d'entrée subtile */
+.card-pf {
+    animation: fadeInUp 0.5s ease-out !important;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Suppression des anciens styles */
+.login-pf-page .login-pf-brand,
+.login-pf-page .login-pf-header {
+    display: none !important;
+}
+
+/* Focus states améliorés */
+input:focus,
+button:focus {
+    outline: 2px solid var(--primary-blue) !important;
+    outline-offset: 2px !important;
+}
