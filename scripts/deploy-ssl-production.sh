@@ -12,18 +12,32 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
-# Configuration
-GITHUB_USERNAME="skaouech"
-REGISTRY="ghcr.io"
-HOSTINGER_IP="${HOSTINGER_IP:-148.230.114.13}"
-CR_PAT=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
-HOSTINGER_USER="${HOSTINGER_USER:-root}"
-PROJECT_NAME="dealtobook"
-DOCKER_COMPOSE_FILE="docker-compose.ssl-complete.yml"
-ENV_FILE="dealtobook-ssl.env"
+# Configuration - UTILISEZ DES VARIABLES D'ENVIRONNEMENT POUR LES SECRETS !
+GITHUB_USERNAME="${GITHUB_USERNAME:-skaouech}"
+REGISTRY="${REGISTRY:-ghcr.io}"
+CR_PAT="${CR_PAT:-}"  # ⚠️ DÉFINIR COMME VARIABLE D'ENVIRONNEMENT: export CR_PAT="votre_token"
 
-# Domaines
-DOMAINS=("administration-dev.dealtobook.com" "website-dev.dealtobook.com" "keycloak-dev.dealtobook.com")
+# Environnement (development ou production)
+DEPLOY_ENV="${DEPLOY_ENV:-production}"  # Par défaut: production
+
+# Configuration basée sur l'environnement
+if [[ "$DEPLOY_ENV" == "development" ]]; then
+    HOSTINGER_IP="${HOSTINGER_DEV_HOST:-148.230.114.13}"
+    HOSTINGER_USER="${HOSTINGER_DEV_USER:-root}"
+    PROJECT_NAME="dealtobook-dev"
+    DOCKER_COMPOSE_FILE="docker-compose.ssl-complete.yml"
+    ENV_FILE="dealtobook-ssl-dev.env"
+    IMAGE_TAG="develop"
+    DOMAINS=("administration-dev.dealtobook.com" "website-dev.dealtobook.com" "keycloak-dev.dealtobook.com")
+else
+    HOSTINGER_IP="${HOSTINGER_PROD_HOST:-148.230.114.13}"
+    HOSTINGER_USER="${HOSTINGER_PROD_USER:-root}"
+    PROJECT_NAME="dealtobook"
+    DOCKER_COMPOSE_FILE="docker-compose.ssl-complete.yml"
+    ENV_FILE="dealtobook-ssl.env"
+    IMAGE_TAG="latest"
+    DOMAINS=("administration.dealtobook.com" "website.dealtobook.com" "keycloak.dealtobook.com")
+fi
 
 # Microservices configuration (using simple arrays for bash compatibility)
 BACKEND_SERVICES_DIRS=("deal_generator" "deal_security" "deal_setting")
@@ -227,20 +241,23 @@ build_backend_services() {
             
             (cd "$service_dir" && {
                 if [ -n "$CR_PAT" ]; then
-                    # Build avec JIB et push vers GHCR
-                    ./mvnw package -Pprod -DskipTests jib:build \
-                        -Djib.to.image="$REGISTRY/$GITHUB_USERNAME/$image_name:latest" \
+                    # Convertir en minuscules pour Docker
+                    local image_name_lower=$(echo "$GITHUB_USERNAME/$image_name" | tr '[:upper:]' '[:lower:]')
+                    
+                    # Build avec JIB et push vers GHCR (compile + build en une étape)
+                    ./mvnw compile jib:build -Pprod -DskipTests \
+                        -Djib.to.image="$REGISTRY/$image_name_lower:$IMAGE_TAG" \
                         -Djib.to.auth.username="$GITHUB_USERNAME" \
                         -Djib.to.auth.password="$CR_PAT" || error "JIB build failed for $service_key"
                     
                     # Tag avec SHA pour traçabilité
                     local commit_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-                    docker tag "$REGISTRY/$GITHUB_USERNAME/$image_name:latest" \
-                              "$REGISTRY/$GITHUB_USERNAME/$image_name:$commit_sha"
-                    docker push "$REGISTRY/$GITHUB_USERNAME/$image_name:$commit_sha"
+                    docker tag "$REGISTRY/$image_name_lower:$IMAGE_TAG" \
+                              "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
+                    docker push "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
                 else
-                    # Build local uniquement
-                    ./mvnw package -Pprod -DskipTests jib:dockerBuild || error "JIB build failed for $service_key"
+                    # Build local uniquement (compile + build en une étape)
+                    ./mvnw compile jib:dockerBuild -Pprod -DskipTests || error "JIB build failed for $service_key"
                 fi
             }) || error "Build failed for $service_key"
             
@@ -274,17 +291,20 @@ build_frontend_services() {
             fi
             
             if [ -n "$CR_PAT" ]; then
+                # Convertir en minuscules pour Docker
+                local image_name_lower=$(echo "$GITHUB_USERNAME/$image_name" | tr '[:upper:]' '[:lower:]')
+                
                 # Build et push vers GHCR avec architecture linux/amd64
-                docker build --platform linux/amd64 -t "$REGISTRY/$GITHUB_USERNAME/$image_name:latest" \
+                docker build --platform linux/amd64 -t "$REGISTRY/$image_name_lower:$IMAGE_TAG" \
                             -f "$service_dir/$dockerfile" "$service_dir/" || error "Docker build failed for $service_key"
                 
-                docker push "$REGISTRY/$GITHUB_USERNAME/$image_name:latest" || error "Docker push failed for $service_key"
+                docker push "$REGISTRY/$image_name_lower:$IMAGE_TAG" || error "Docker push failed for $service_key"
                 
                 # Tag avec SHA pour traçabilité
                 local commit_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-                docker tag "$REGISTRY/$GITHUB_USERNAME/$image_name:latest" \
-                          "$REGISTRY/$GITHUB_USERNAME/$image_name:$commit_sha"
-                docker push "$REGISTRY/$GITHUB_USERNAME/$image_name:$commit_sha"
+                docker tag "$REGISTRY/$image_name_lower:$IMAGE_TAG" \
+                          "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
+                docker push "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
             else
                 # Build local uniquement avec architecture linux/amd64
                 docker build --platform linux/amd64 -t "$image_name:latest" \
@@ -715,9 +735,23 @@ show_deployment_summary() {
 
 main() {
     echo -e "${PURPLE}"
-    echo "🚀 ===== DÉPLOIEMENT PRODUCTION DEALTOBOOK AVEC SSL ====="
-    echo "======================================================="
+    echo "🚀 ===== DÉPLOIEMENT DEALTOBOOK AVEC SSL ====="
+    echo "=============================================="
     echo -e "${NC}"
+    
+    # Afficher l'environnement actif
+    if [[ "$DEPLOY_ENV" == "development" ]]; then
+        echo -e "${YELLOW}📍 Environnement: DEVELOPMENT${NC}"
+        echo -e "   🖥️  Serveur: $HOSTINGER_IP"
+        echo -e "   📁 Dossier: /opt/$PROJECT_NAME"
+        echo -e "   🏷️  Tag images: $IMAGE_TAG"
+    else
+        echo -e "${GREEN}📍 Environnement: PRODUCTION${NC}"
+        echo -e "   🖥️  Serveur: $HOSTINGER_IP"
+        echo -e "   📁 Dossier: /opt/$PROJECT_NAME"
+        echo -e "   🏷️  Tag images: $IMAGE_TAG"
+    fi
+    echo ""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
     
     # Parse services spécifiques si fournis
     if [[ "$2" =~ ^[a-zA-Z_,]+$ ]]; then
@@ -792,40 +826,207 @@ main() {
             ;;
         logs)
             log "Affichage des logs..."
-            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs -f"
+            if [[ "$BUILD_SPECIFIC_SERVICES" == "true" ]]; then
+                # Construire la liste des services pour les logs
+                services_list=""
+                for service in "${SPECIFIC_SERVICES[@]}"; do
+                    services_list+=" $service"
+                done
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs -f${services_list}"
+            else
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs -f"
+            fi
+            ;;
+        restart)
+            log "🔄 Redémarrage des services..."
+            if [[ "$BUILD_SPECIFIC_SERVICES" == "true" ]]; then
+                # Redémarrer seulement les services spécifiés
+                services_to_restart=""
+                for service in "${SPECIFIC_SERVICES[@]}"; do
+                    case "$service" in
+                        'deal_generator'|'dealdealgenerator')
+                            services_to_restart+=" deal-generator"
+                            ;;
+                        'deal_security'|'dealsecurity')
+                            services_to_restart+=" deal-security"
+                            ;;
+                        'deal_setting'|'dealsetting')
+                            services_to_restart+=" deal-setting"
+                            ;;
+                        'deal_webui'|'dealtobook-deal-webui')
+                            services_to_restart+=" deal-webui"
+                            ;;
+                        'deal_website'|'dealtobook-deal-website')
+                            services_to_restart+=" deal-website"
+                            ;;
+                        'keycloak')
+                            services_to_restart+=" keycloak"
+                            ;;
+                        'postgres'|'postgresql')
+                            services_to_restart+=" postgres"
+                            ;;
+                        'nginx')
+                            services_to_restart+=" nginx"
+                            ;;
+                        'redis')
+                            services_to_restart+=" redis"
+                            ;;
+                        *)
+                            services_to_restart+=" $service"
+                            ;;
+                    esac
+                done
+                log "🎯 Redémarrage des services:$services_to_restart"
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env restart$services_to_restart"
+            else
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env restart"
+            fi
+            success "✅ Services redémarrés"
+            ;;
+        stop)
+            log "🛑 Arrêt des services..."
+            if [[ "$BUILD_SPECIFIC_SERVICES" == "true" ]]; then
+                # Arrêter seulement les services spécifiés
+                services_to_stop=""
+                for service in "${SPECIFIC_SERVICES[@]}"; do
+                    case "$service" in
+                        'deal_generator'|'dealdealgenerator')
+                            services_to_stop+=" deal-generator"
+                            ;;
+                        'deal_security'|'dealsecurity')
+                            services_to_stop+=" deal-security"
+                            ;;
+                        'deal_setting'|'dealsetting')
+                            services_to_stop+=" deal-setting"
+                            ;;
+                        'deal_webui'|'dealtobook-deal-webui')
+                            services_to_stop+=" deal-webui"
+                            ;;
+                        'deal_website'|'dealtobook-deal-website')
+                            services_to_stop+=" deal-website"
+                            ;;
+                        'keycloak')
+                            services_to_stop+=" keycloak"
+                            ;;
+                        'postgres'|'postgresql')
+                            services_to_stop+=" postgres"
+                            ;;
+                        'nginx')
+                            services_to_stop+=" nginx"
+                            ;;
+                        *)
+                            services_to_stop+=" $service"
+                            ;;
+                    esac
+                done
+                log "🎯 Arrêt des services:$services_to_stop"
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env stop$services_to_stop"
+            else
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env stop"
+            fi
+            success "✅ Services arrêtés"
+            ;;
+        ps|list)
+            log "📋 Liste des conteneurs..."
+            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env ps"
+            ;;
+        health)
+            log "🏥 Vérification santé détaillée..."
+            health_check
+            ;;
+        build-only)
+            log "🏗️ Build uniquement (sans déploiement)..."
+            check_prerequisites true
+            login_to_ghcr
+            build_backend_services
+            build_frontend_services
+            success "✅ Build terminé"
+            ;;
+        deploy-only)
+            log "🚀 Déploiement uniquement (sans rebuild)..."
+            check_prerequisites
+            deploy_to_hostinger
+            start_services_on_hostinger
+            health_check
+            success "✅ Déploiement terminé"
             ;;
         *)
-            echo "Usage: $0 {ssl-setup|build|deploy|config|start|redeploy|update|status|test-ssl|down|logs} [services]"
+            echo "Usage: $0 {COMMAND} [services]"
             echo ""
-            echo "  ssl-setup  : Configure les certificats SSL Let's Encrypt"
-            echo "  build      : Construire et pousser les images vers GHCR"
-            echo "  deploy     : Déploiement complet (build + deploy + config + SSL)"
-            echo "  config     : Déployer uniquement la configuration"
-            echo "  start      : Démarrer les services sur Hostinger"
-            echo "  redeploy   : Redéploiement rapide (sans rebuild)"
-            echo "  update     : Mise à jour sélective (build + redémarrage ciblé)"
-            echo "  status     : Vérifier le status du déploiement"
-            echo "  test-ssl   : Teste les endpoints HTTPS"
-            echo "  down       : Arrête tous les services"
-            echo "  logs       : Affiche les logs en temps réel"
+            echo "📦 BUILD & DEPLOY:"
+            echo "  build         : Construire et pousser les images vers GHCR"
+            echo "  build-only    : Build uniquement (sans déploiement)"
+            echo "  deploy        : Déploiement complet (build + deploy + config + SSL)"
+            echo "  deploy-only   : Déployer sans rebuild"
+            echo "  update        : Mise à jour sélective (build + redémarrage ciblé)"
+            echo "  redeploy      : Redéploiement rapide (sans rebuild)"
             echo ""
-            echo "🎯 Services spécifiques (optionnel) :"
-            echo "  deal_generator, deal_security, deal_setting, deal_webui, deal_website, keycloak, postgres"
+            echo "🔧 GESTION DES SERVICES:"
+            echo "  start         : Démarrer les services"
+            echo "  stop          : Arrêter les services"
+            echo "  restart       : Redémarrer les services"
+            echo "  down          : Arrêter et supprimer tous les conteneurs"
+            echo "  ps|list       : Liste des conteneurs"
             echo ""
-            echo "📝 Exemples :"
-            echo "  ./scripts/deploy-ssl-production.sh build deal_security"
-            echo "  ./scripts/deploy-ssl-production.sh update deal_security"
-            echo "  ./scripts/deploy-ssl-production.sh start deal_generator,deal_security"
-            echo "  ./scripts/deploy-ssl-production.sh logs keycloak"
-            echo "  ./scripts/deploy-ssl-production.sh down deal_webui,deal_website"
+            echo "📊 MONITORING & DEBUG:"
+            echo "  status        : Vérifier le status du déploiement"
+            echo "  health        : Health check détaillé"
+            echo "  logs          : Afficher les logs en temps réel"
+            echo "  test-ssl      : Tester les endpoints HTTPS"
             echo ""
-            echo "🔑 Prérequis :"
-            echo "  export CR_PAT=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"
-            echo "  export HOSTINGER_IP=148.230.114.13"
-            echo "  export HOSTINGER_USER=root"
+            echo "⚙️ CONFIGURATION:"
+            echo "  ssl-setup     : Configurer les certificats SSL Let's Encrypt"
+            echo "  config        : Déployer uniquement la configuration"
             echo ""
-            echo "🚀 Pour un déploiement complet :"
-            echo "  ./scripts/deploy-ssl-production.sh deploy"
+            echo "🎯 Services disponibles (optionnel) :"
+            echo "  Backend : deal_generator, deal_security, deal_setting"
+            echo "  Frontend: deal_webui, deal_website"
+            echo "  Infra   : keycloak, postgres, redis, nginx, zipkin, prometheus, grafana"
+            echo ""
+            echo "📝 Exemples d'utilisation :"
+            echo ""
+            echo "  🟡 DEVELOPMENT:"
+            echo "    export DEPLOY_ENV=development"
+            echo "    export CR_PAT=\"your_token\""
+            echo "    ./deploy-ssl-production.sh deploy"
+            echo ""
+            echo "  🟢 PRODUCTION:"
+            echo "    export DEPLOY_ENV=production"
+            echo "    export CR_PAT=\"your_token\""
+            echo "    ./deploy-ssl-production.sh deploy"
+            echo ""
+            echo "  Build d'un service spécifique:"
+            echo "    ./deploy-ssl-production.sh build deal_security"
+            echo ""
+            echo "  Redémarrer des services:"
+            echo "    ./deploy-ssl-production.sh restart deal_generator,deal_security"
+            echo ""
+            echo "  Voir les logs d'un service:"
+            echo "    ./deploy-ssl-production.sh logs deal_webui"
+            echo ""
+            echo "  Health check:"
+            echo "    ./deploy-ssl-production.sh health"
+            echo ""
+            echo "🔑 Variables d'environnement :"
+            echo "  OBLIGATOIRE:"
+            echo "    export CR_PAT=\"votre_github_token\"         # Token GitHub pour GHCR"
+            echo ""
+            echo "  ENVIRONNEMENT (Development ou Production):"
+            echo "    export DEPLOY_ENV=\"development\"            # Deploy vers DEV (tag: develop, /opt/dealtobook-dev)"
+            echo "    export DEPLOY_ENV=\"production\"             # Deploy vers PROD (tag: latest, /opt/dealtobook)"
+            echo ""
+            echo "  DEVELOPMENT:"
+            echo "    export HOSTINGER_DEV_HOST=\"148.230.114.13\" # IP serveur dev"
+            echo "    export HOSTINGER_DEV_USER=\"root\"           # User SSH dev"
+            echo ""
+            echo "  PRODUCTION:"
+            echo "    export HOSTINGER_PROD_HOST=\"148.230.114.13\"# IP serveur prod"
+            echo "    export HOSTINGER_PROD_USER=\"root\"          # User SSH prod"
+            echo ""
+            echo "  AUTRES:"
+            echo "    export GITHUB_USERNAME=\"skaouech\"          # Utilisateur GitHub (en minuscules)"
+            echo ""
+            echo "⚠️  SÉCURITÉ: Ne JAMAIS hardcoder les tokens dans le code !"
             exit 1
             ;;
     esac
