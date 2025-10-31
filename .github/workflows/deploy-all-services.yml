@@ -85,8 +85,13 @@ jobs:
           HOSTINGER_IP: ${{ secrets.HOSTINGER_IP }}
         run: |
           echo "🔍 Vérification des services déployés..."
-          PROJECT_DIR="/opt/dealtobook-${{ github.event.inputs.environment == 'production' && 'prod' || 'dev' }}"
-          ssh ${HOSTINGER_USER}@${HOSTINGER_IP} "cd $PROJECT_DIR && docker-compose ps"
+          if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+            PROJECT_DIR="/opt/dealtobook"
+          else
+            PROJECT_DIR="/opt/dealtobook-dev"
+          fi
+          echo "📂 Checking services in: $PROJECT_DIR"
+          ssh ${HOSTINGER_USER}@${HOSTINGER_IP} "cd $PROJECT_DIR && docker-compose -f docker-compose.ssl-complete.yml ps"
       
       - name: 📊 Deployment Summary
         if: always()
