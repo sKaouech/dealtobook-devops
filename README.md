@@ -1,143 +1,206 @@
-# DealToBook DevOps
+# 🚀 DealToBook DevOps
 
-Repository central pour l'infrastructure et le déploiement de la plateforme DealToBook.
+Infrastructure et scripts de déploiement pour l'application DealToBook.
 
-## 🏗️ Architecture
+---
 
-### Services
-- **Backend Services**: Spring Boot (deal-generator, deal-security, deal-setting)
-- **Frontend Services**: Angular (deal-webui, deal-website)
-- **Infrastructure**: PostgreSQL, Keycloak, Nginx, Monitoring
+## 📖 Documentation
 
-### Environnements
-- **Production**: Hostinger VPS (148.230.114.13)
-- **Future**: Kubernetes sur AWS EKS
+### 🏁 Démarrage Rapide
+- **[START-HERE-V2.md](./START-HERE-V2.md)** - Point d'entrée principal
 
-## 🚀 Déploiement
+### 📦 Déploiement
+- **[Quick Start](./docs/deployment/QUICK-START-V2.md)** - Guide de démarrage rapide (30 min)
+- **[README Deploy V2](./docs/deployment/README-DEPLOY-V2.md)** - Vue d'ensemble complète
+- **[Migration V1→V2](./docs/deployment/MIGRATION-V1-TO-V2.md)** - Guide de migration
+- **[Documentation Technique](./docs/deployment/DEPLOY-SCRIPT-V2-IMPROVEMENTS.md)** - Détails complets
+- **[Index](./docs/deployment/INDEX-DOCUMENTATION-V2.md)** - Navigation complète
 
-### Déploiement Complet
+### 📚 Guides
+- [Configuration SSL](./docs/guides/GUIDE-SSL-CONFIGURATION.md)
+- [Thème Keycloak](./docs/guides/GUIDE-THEME-KEYCLOAK.md)
+- [Migration PostgreSQL](./docs/guides/GUIDE-MIGRATION-POSTGRES.md)
+- [Connexion PostgreSQL](./docs/guides/GUIDE-CONNEXION-POSTGRES.md)
+- [Test Responsive](./docs/guides/GUIDE-TEST-RESPONSIVE.md)
+- [Et plus...](./docs/guides/)
+
+### 🔧 Troubleshooting
+- [Erreur 502](./docs/troubleshooting/RESOLUTION-502-ERROR.md)
+- [Erreur Feign](./docs/troubleshooting/RESOLUTION-FEIGN-ERROR.md)
+- [Dépannage Keycloak](./docs/guides/GUIDE-DEPANNAGE-KEYCLOAK.md)
+
+---
+
+## 🛠️ Scripts
+
+### Script Principal
 ```bash
-# Via GitHub Actions (recommandé)
-# Aller dans Actions → Full Stack Deployment Orchestration → Run workflow
-
-# Ou via API
-curl -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/skaouech/dealtobook-devops/dispatches \
-  -d '{"event_type":"deploy-all"}'
+cd scripts/
+./deploy-ssl-production-v2.sh help
 ```
 
-### Déploiement Sélectif
-```bash
-# Déployer seulement certains services
-# Dans GitHub Actions, spécifier: deal-generator,deal-security
-```
+### Documentation Scripts
+Voir [scripts/README.md](./scripts/README.md) pour la documentation complète.
 
-### Déploiement d'Urgence
-```bash
-# Connexion directe au serveur
-ssh root@148.230.114.13
-cd /opt/dealtobook
-docker-compose -f docker-compose.ssl-complete.yml pull
-docker-compose -f docker-compose.ssl-complete.yml up -d
-```
+---
 
-## 📁 Structure
+## 📁 Structure du Projet
 
 ```
 dealtobook-devops/
-├── .github/workflows/          # Workflows GitHub Actions
-├── docker-compose/            # Configurations Docker Compose
-├── nginx/                     # Configurations Nginx
-├── keycloak-themes/          # Thèmes Keycloak personnalisés
-├── scripts/                  # Scripts de déploiement et maintenance
-├── monitoring/               # Configuration monitoring (Prometheus, Grafana)
-└── docs/                    # Documentation technique
+├── README.md                    # Ce fichier
+├── START-HERE-V2.md             # Point d'entrée
+│
+├── docs/                        # Documentation
+│   ├── deployment/              # Docs déploiement V2
+│   ├── guides/                  # Guides spécifiques
+│   ├── troubleshooting/         # Résolution problèmes
+│   └── archive/                 # Docs obsolètes
+│
+├── scripts/                     # Scripts de déploiement
+│   ├── deploy-ssl-production-v2.sh  # Script principal
+│   ├── test-deploy-v2.sh        # Tests
+│   ├── legacy/                  # Scripts obsolètes
+│   └── tools/                   # Scripts utilitaires
+│
+├── config/                      # Configuration
+│   ├── docker-compose.ssl-complete.yml
+│   ├── dealtobook-ssl.env
+│   ├── nginx/
+│   ├── monitoring/
+│   └── keycloak-themes/
+│
+└── backups/                     # Sauvegardes
 ```
 
-## 🔧 Configuration
+---
 
-### Secrets GitHub
-- `HOSTINGER_HOST`: 148.230.114.13
-- `HOSTINGER_USER`: root
-- `HOSTINGER_SSH_KEY`: Clé SSH privée
-- `POSTGRES_PASSWORD`: Mot de passe PostgreSQL
-- `KEYCLOAK_ADMIN_PASSWORD`: Mot de passe admin Keycloak
+## ⚡ Démarrage Rapide (2 minutes)
 
-### Variables d'Environnement
-- `REGISTRY`: ghcr.io/skaouech
-- `COMPOSE_FILE`: docker-compose.ssl-complete.yml
-- `ENVIRONMENT`: prod
+### 1. Configuration
 
-## 🏥 Monitoring
-
-### URLs de Santé
-- **Administration**: https://administration-dev.dealtobook.com
-- **Website**: https://website-dev.dealtobook.com
-- **Keycloak**: https://keycloak-dev.dealtobook.com
-- **Grafana**: https://administration-dev.dealtobook.com:3000
-- **Prometheus**: https://administration-dev.dealtobook.com:9090
-
-### Health Checks
-Tous les services exposent des endpoints de santé :
-- **Backend**: `/management/health`
-- **Frontend**: Status HTTP 200
-- **Infrastructure**: Endpoints spécifiques
-
-## 🔄 Rollback
-
-### Automatique
-- Health check échoue → Rollback automatique
-- Images de backup conservées automatiquement
-
-### Manuel
 ```bash
-ssh root@148.230.114.13
-cd /opt/dealtobook
+# Créer votre fichier de configuration
+cat > ~/.dealtobook-deploy.env << 'EOF'
+export CR_PAT="your_github_token"
+export DEPLOY_ENV="development"
+export GITHUB_USERNAME="skaouech"
+EOF
 
-# Lister les backups disponibles
-docker images | grep backup
-
-# Restaurer un service spécifique
-docker tag deal-security:backup-20241009 deal-security:latest
-docker-compose -f docker-compose.ssl-complete.yml up -d --no-deps deal-security
+# Charger la configuration
+source ~/.dealtobook-deploy.env
 ```
 
-## 📊 Métriques
+### 2. Premier Déploiement
 
-### Déploiement
-- **Fréquence**: Automatique sur push main
-- **Durée moyenne**: 5-8 minutes
-- **Taux de succès**: Surveillé via GitHub Actions
+```bash
+# Naviguer vers les scripts
+cd scripts/
 
-### Performance
-- **Monitoring**: Prometheus + Grafana
-- **Logs**: Centralisés via Docker Compose
-- **Alertes**: À configurer selon les besoins
+# Voir l'aide
+./deploy-ssl-production-v2.sh help
 
-## 🛠️ Maintenance
+# Déployer en development
+./deploy-ssl-production-v2.sh deploy
+```
 
-### Nettoyage Automatique
-- Images Docker anciennes (garde les 3 dernières)
-- Backups de configuration (garde les 5 derniers)
-- Logs rotatifs
+---
 
-### Mise à Jour
-- **Services**: Automatique via CI/CD
-- **Infrastructure**: Manuel avec validation
-- **Certificats SSL**: Automatique (Let's Encrypt)
+## 🎯 Cas d'Usage Courants
 
-## 🔮 Roadmap
+### Déployer un Service Spécifique
 
-### Phase 2: Kubernetes
-- Migration vers AWS EKS
-- Helm Charts
-- ArgoCD pour GitOps
-- Multi-environnement (dev/staging/prod)
+```bash
+./scripts/deploy-ssl-production-v2.sh build deal_security
+./scripts/deploy-ssl-production-v2.sh deploy-only deal_security
+```
 
-### Phase 3: Améliorations
-- Tests automatisés
-- Security scanning
-- Performance monitoring
-- Notifications Slack/Discord
+### Debug en Production
+
+```bash
+./scripts/deploy-ssl-production-v2.sh inspect deal_generator
+./scripts/deploy-ssl-production-v2.sh logs deal_security
+./scripts/deploy-ssl-production-v2.sh exec postgres psql -U dealtobook
+```
+
+### Scaler un Service
+
+```bash
+./scripts/deploy-ssl-production-v2.sh scale deal_generator 3
+./scripts/deploy-ssl-production-v2.sh ps
+```
+
+---
+
+## 🔑 Variables d'Environnement
+
+### Obligatoires
+```bash
+export CR_PAT="your_github_token"          # Token GitHub pour GHCR
+export DEPLOY_ENV="development|production" # Environnement cible
+```
+
+### Optionnelles
+```bash
+export CUSTOM_TAG="v1.2.3"                 # Tag personnalisé
+export DB_READY_TIMEOUT="60"               # Timeouts configurables
+export KEYCLOAK_READY_TIMEOUT="90"
+```
+
+---
+
+## 📊 Services Disponibles
+
+### Backend
+- `deal-generator` (alias: `generator`, `deal_generator`)
+- `deal-security` (alias: `security`, `deal_security`)
+- `deal-setting` (alias: `setting`, `deal_setting`)
+
+### Frontend
+- `deal-webui` (alias: `webui`, `admin`)
+- `deal-website` (alias: `website`)
+
+### Infrastructure
+- `postgres` (alias: `db`)
+- `keycloak`
+- `nginx`
+- `redis`
+
+---
+
+## 🆘 Support
+
+### Documentation
+- [Quick Start](./docs/deployment/QUICK-START-V2.md)
+- [Troubleshooting](./docs/troubleshooting/)
+- [Guides](./docs/guides/)
+
+### Contact
+- Slack: `#devops-support`
+- Email: `devops@dealtobook.com`
+
+---
+
+## 📝 Changelog
+
+### Version 2.0.1 (2025-10-28)
+- ✅ Hotfix compatibilité bash 3.x (macOS)
+- ✅ Organisation et nettoyage de la documentation
+- ✅ Structure de dossiers claire
+
+### Version 2.0.0 (2025-10-28)
+- ✨ 9 nouvelles commandes (pull, scale, exec, inspect, etc.)
+- ✨ Tags personnalisés et timeouts configurables
+- ✨ Mapping centralisé avec alias de services
+- 🐛 Corrections de bugs V1
+- 📚 Documentation complète
+
+---
+
+## 📄 Licence
+
+© 2025 DealToBook - Tous droits réservés
+
+---
+
+**Prêt à déployer ? Commencez par [START-HERE-V2.md](./START-HERE-V2.md) ! 🚀**

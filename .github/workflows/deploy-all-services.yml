@@ -1,0 +1,99 @@
+name: 🚀 Deploy All Services
+
+# À copier dans le repo dealtobook-devops/.github/workflows/
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - development
+          - production
+        default: 'development'
+      services:
+        description: 'Services à déployer (all, ou liste: generator,security,setting)'
+        required: false
+        default: 'all'
+      image-tag:
+        description: 'Tag des images Docker'
+        required: false
+        default: 'latest'
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: 📥 Checkout dealtobook-devops
+        uses: actions/checkout@v4
+      
+      - name: 🔐 Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          HOSTINGER_IP: ${{ secrets.HOSTINGER_IP }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H $HOSTINGER_IP >> ~/.ssh/known_hosts
+      
+      - name: 📋 Prepare services list
+        id: prepare
+        run: |
+          SERVICES="${{ github.event.inputs.services }}"
+          
+          # Convertir "all" en liste complète
+          if [ "$SERVICES" = "all" ]; then
+            SERVICES="generator security setting website webui"
+          fi
+          
+          # Remplacer les virgules par des espaces
+          SERVICES=$(echo "$SERVICES" | tr ',' ' ')
+          
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "📦 Services to deploy: $SERVICES"
+      
+      - name: 🚀 Deploy to Server
+        env:
+          HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
+          HOSTINGER_IP: ${{ secrets.HOSTINGER_IP }}
+          IMAGE_TAG: ${{ github.event.inputs.image-tag }}
+          SERVICES: ${{ steps.prepare.outputs.services }}
+        run: |
+          cd scripts
+          chmod +x deploy-ssl-production-v2.sh
+          
+          export IMAGE_TAG="${{ github.event.inputs.image-tag }}"
+          
+          echo "🚀 Deploying services: $SERVICES with tag: $IMAGE_TAG"
+          ./deploy-ssl-production-v2.sh deploy $SERVICES
+      
+      - name: ✅ Verify Deployment
+        env:
+          HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
+          HOSTINGER_IP: ${{ secrets.HOSTINGER_IP }}
+        run: |
+          echo "🔍 Vérification des services déployés..."
+          PROJECT_DIR="/opt/dealtobook-${{ github.event.inputs.environment == 'production' && 'prod' || 'dev' }}"
+          ssh ${HOSTINGER_USER}@${HOSTINGER_IP} "cd $PROJECT_DIR && docker-compose ps"
+      
+      - name: 📊 Deployment Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## ✅ Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Services:** ${{ steps.prepare.outputs.services }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ github.event.inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+

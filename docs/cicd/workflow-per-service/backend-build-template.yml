@@ -1,0 +1,123 @@
+name: Build and Push Docker Image
+
+# À copier dans chaque repo de service backend
+# Adapter les variables selon le service
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Tag de l''image Docker'
+        required: false
+        default: 'latest'
+
+env:
+  # ⚠️ ADAPTER CES VARIABLES POUR CHAQUE SERVICE
+  SERVICE_NAME: deal-generator               # deal-generator, deal-security, deal-setting, deal-website
+  GHCR_IMAGE: ghcr.io/skaouech/dealdealgenerator  # Nom de l'image GHCR
+  JAVA_VERSION: '17'                         # 11 ou 17 selon le service
+  MAVEN_PROFILE: prod
+
+jobs:
+  build-and-push:
+    name: Build ${{ env.SERVICE_NAME }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: ☕ Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+      
+      - name: 🔧 Build with Maven
+        run: |
+          ./mvnw clean package -P${{ env.MAVEN_PROFILE }} -DskipTests
+      
+      - name: 🐳 Build Docker Image with Jib
+        run: |
+          ./mvnw -P${{ env.MAVEN_PROFILE }} jib:dockerBuild -DskipTests
+      
+      - name: 🏷️ Determine image tag
+        id: tag
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            echo "tag=develop" >> $GITHUB_OUTPUT
+          else
+            echo "tag=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: 🏷️ Tag Docker Images
+        run: |
+          # Trouver l'image buildée par Jib
+          LOCAL_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "^(deal)" | head -n1)
+          echo "Local image: $LOCAL_IMAGE"
+          
+          # Tag avec le tag déterminé
+          docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          
+          # Tag avec le SHA pour traçabilité
+          docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          
+          # Tag avec la branche
+          BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+      
+      - name: 🔐 Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 🚀 Push Docker Images to GHCR
+        run: |
+          docker push ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          docker push ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          docker push ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+      
+      - name: 📊 Summary
+        run: |
+          echo "## 🎉 Build Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.GHCR_IMAGE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ steps.tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`sha-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+      
+      # Optionnel : Déclencher le déploiement dans dealtobook-devops
+      # Décommenter si vous voulez un déploiement automatique
+      # - name: 🔔 Trigger deployment
+      #   if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+      #   run: |
+      #     curl -X POST \
+      #       -H "Accept: application/vnd.github.v3+json" \
+      #       -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+      #       https://api.github.com/repos/skaouech/dealtobook-devops/dispatches \
+      #       -d '{"event_type":"deploy-service","client_payload":{"service":"${{ env.SERVICE_NAME }}","tag":"${{ steps.tag.outputs.tag }}"}}'
+

@@ -39,6 +39,7 @@ if [[ "$DEPLOY_ENV" == "development" ]]; then
     HOSTINGER_USER="${HOSTINGER_DEV_USER:-root}"
     PROJECT_NAME="dealtobook-dev"
     DOCKER_COMPOSE_FILE="$CONFIG_DIR/docker-compose.ssl-complete.yml"
+    DOCKER_COMPOSE_REMOTE="docker-compose.ssl-complete.yml"  # Nom sur le serveur distant
     ENV_FILE="$CONFIG_DIR/dealtobook-ssl-dev.env"
     IMAGE_TAG="${CUSTOM_TAG:-develop}"
     DOMAINS=("administration-dev.dealtobook.com" "website-dev.dealtobook.com" "keycloak-dev.dealtobook.com")
@@ -47,6 +48,7 @@ else
     HOSTINGER_USER="${HOSTINGER_PROD_USER:-root}"
     PROJECT_NAME="dealtobook"
     DOCKER_COMPOSE_FILE="$CONFIG_DIR/docker-compose.ssl-complete.yml"
+    DOCKER_COMPOSE_REMOTE="docker-compose.ssl-complete.yml"  # Nom sur le serveur distant
     ENV_FILE="$CONFIG_DIR/dealtobook-ssl.env"
     IMAGE_TAG="${CUSTOM_TAG:-latest}"
     DOMAINS=("administration.dealtobook.com" "website.dealtobook.com" "keycloak.dealtobook.com")
@@ -171,10 +173,13 @@ should_process_service() {
 # Get mapped services list for docker-compose commands
 get_mapped_services_list() {
     local services_list=""
-    for service in "${SPECIFIC_SERVICES[@]}"; do
-        local mapped=$(map_service_name "$service")
-        services_list+=" $mapped"
-    done
+    # Vérifier si le tableau n'est pas vide (compatibilité avec set -u)
+    if [ ${#SPECIFIC_SERVICES[@]} -gt 0 ]; then
+        for service in "${SPECIFIC_SERVICES[@]}"; do
+            local mapped=$(map_service_name "$service")
+            services_list+=" $mapped"
+        done
+    fi
     echo "$services_list"
 }
 
@@ -376,12 +381,12 @@ build_backend_services() {
                     docker tag "$REGISTRY/$image_name_lower:$IMAGE_TAG" \
                               "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
                     retry_with_backoff 3 5 docker push "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
-                } else {
+                else
                     retry_with_backoff 3 5 \
                       ./mvnw -ntp compile jib:dockerBuild -Pprod -DskipTests \
                       -Djib.httpTimeout=120000 \
                     || { error "  ❌ JIB build failed for $service_key"; build_failed=true; }
-                }
+                fi
             }) || { error "Build failed for $service_key"; build_failed=true; }
             
             [ "$build_failed" = false ] && success "  Service $service_key construit et poussé"
@@ -413,8 +418,16 @@ build_frontend_services() {
         if [ -d "$service_dir" ]; then
             log "  Building $service_key → $image_name..."
             
-            local dockerfile="Dockerfile.simple"
-            [ "$service_key" = "deal_website" ] && dockerfile="Dockerfile.frontend"
+            # Déterminer le Dockerfile à utiliser
+            local dockerfile="Dockerfile"
+            if [ -f "$service_dir/Dockerfile2" ] && [ "$service_key" = "deal_webui" ]; then
+                dockerfile="Dockerfile2"
+            elif [ -f "$service_dir/Dockerfile" ]; then
+                dockerfile="Dockerfile"
+            else
+                warning "  Aucun Dockerfile trouvé pour $service_key"
+                continue
+            fi
             
             if [ -n "$CR_PAT" ]; then
                 local image_name_lower=$(echo "$GITHUB_USERNAME/$image_name" | tr '[:upper:]' '[:lower:]')
@@ -428,10 +441,10 @@ build_frontend_services() {
                 local commit_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
                 docker tag "$REGISTRY/$image_name_lower:$IMAGE_TAG" "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
                 retry_with_backoff 3 5 docker push "$REGISTRY/$image_name_lower:$IMAGE_TAG-$commit_sha" 2>/dev/null || true
-            } else {
+            else
                 retry_with_backoff 3 5 docker build --platform linux/amd64 -t "$image_name:latest" -f "$service_dir/$dockerfile" "$service_dir/" \
                   || { error "  ❌ Docker build failed for $service_key"; build_failed=true; }
-            }
+            fi
             
             [ "$build_failed" = false ] && success "  Service $service_key construit"
         else
@@ -453,8 +466,58 @@ deploy_to_hostinger() {
     
     # Transférer les fichiers de configuration
     log "  Transfert des fichiers de configuration..."
-    scp -o StrictHostKeyChecking=no "$DOCKER_COMPOSE_FILE" "${HOSTINGER_USER}@${HOSTINGER_IP}:/opt/${PROJECT_NAME}/" || error "Failed to transfer docker-compose"
+    
+    # Créer une copie temporaire du docker-compose avec le bon tag d'image
+    local temp_compose=$(mktemp /tmp/docker-compose-XXXXXX.yml)
+    log "  🏷️  Application du tag d'image '$IMAGE_TAG' au docker-compose..."
+    
+    # Remplacer :latest par :$IMAGE_TAG dans les images d'application (pas pour les images de base comme postgres, nginx, etc.)
+    sed -E "s|(ghcr\.io/[^:]+):latest|\1:${IMAGE_TAG}|g" "$DOCKER_COMPOSE_FILE" > "$temp_compose" || error "Failed to update image tags"
+    
+    # Vérifier que les remplacements ont bien été effectués
+    if grep -q ":${IMAGE_TAG}" "$temp_compose"; then
+        log "  ✅ Tags d'image mis à jour: $(grep -E 'ghcr\.io.*:'"${IMAGE_TAG}" "$temp_compose" | wc -l | tr -d ' ') images utilisent le tag '$IMAGE_TAG'"
+    else
+        warning "  ⚠️  Aucun tag remplacé - vérification..."
+        grep -E "ghcr\.io.*:latest" "$temp_compose" || true
+    fi
+    
+    scp -o StrictHostKeyChecking=no "$temp_compose" "${HOSTINGER_USER}@${HOSTINGER_IP}:/opt/${PROJECT_NAME}/${DOCKER_COMPOSE_REMOTE}" || error "Failed to transfer docker-compose"
+    rm -f "$temp_compose"
     scp -o StrictHostKeyChecking=no "$ENV_FILE" "${HOSTINGER_USER}@${HOSTINGER_IP}:/opt/${PROJECT_NAME}/.env" || error "Failed to transfer .env file"
+    
+    # Transférer les scripts PostgreSQL (postgresql.conf, pg_hba.conf, init-multiple-databases.sh, etc.)
+    if [ -d "$CONFIG_DIR/scripts" ] && [ "$(ls -A $CONFIG_DIR/scripts 2>/dev/null)" ]; then
+        log "  Transfert des scripts PostgreSQL..."
+        # Créer le répertoire scripts sur le serveur distant d'abord
+        run_remote_cmd "mkdir -p /opt/${PROJECT_NAME}/scripts && chmod 755 /opt/${PROJECT_NAME}/scripts" || true
+        
+        # Supprimer les anciens répertoires qui auraient pu être créés par erreur (bug de transfert précédent)
+        log "    Nettoyage des anciens répertoires incorrects..."
+        run_remote_cmd "cd /opt/${PROJECT_NAME}/scripts && {
+            # Supprimer tout ce qui est un répertoire mais devrait être un fichier
+            for item in pg_hba.conf postgresql.conf init-multiple-databases.sh; do
+                [ -d \$item ] && echo \"  Suppression du répertoire erroné: \$item\" && rm -rf \$item || true
+            done
+        }" || true
+        
+        # Transférer les fichiers UN PAR UN pour éviter les problèmes de répertoires
+        local postgres_files=("pg_hba.conf" "postgresql.conf" "init-multiple-databases.sh" "99-copy-pg-hba.sh" "postgres-entrypoint.sh")
+        for file in "${postgres_files[@]}"; do
+            if [ -f "$CONFIG_DIR/scripts/$file" ]; then
+                log "    Transfert de $file..."
+                scp -o StrictHostKeyChecking=no "$CONFIG_DIR/scripts/$file" "${HOSTINGER_USER}@${HOSTINGER_IP}:/opt/${PROJECT_NAME}/scripts/$file" || warning "Failed to transfer $file"
+                # S'assurer que c'est un fichier et non un répertoire
+                run_remote_cmd "cd /opt/${PROJECT_NAME}/scripts && [ -f $file ] && chmod 644 $file 2>/dev/null || rm -rf $file" || true
+            fi
+        done
+        
+        # S'assurer que les scripts sont exécutables
+        run_remote_cmd "chmod +x /opt/${PROJECT_NAME}/scripts/*.sh 2>/dev/null || true" || true
+        
+        # Vérification finale
+        run_remote_cmd "cd /opt/${PROJECT_NAME}/scripts && echo '📋 Fichiers transférés:' && ls -lh *.conf *.sh 2>/dev/null | head -10" || true
+    fi
     
     # Transférer les répertoires de configuration
     local config_dirs=("nginx" "monitoring" "keycloak-themes")
@@ -484,16 +547,31 @@ pull_images_on_hostinger() {
         return 0
     fi
     
+    log "  🏷️  Pull des images avec le tag '$IMAGE_TAG'..."
+    
+    # Liste des services avec leurs images correspondantes
     local services_to_pull=$(get_mapped_services_list)
     
     run_remote_cmd "cd /opt/${PROJECT_NAME} && {
         echo '$CR_PAT' | docker login ghcr.io -u '$GITHUB_USERNAME' --password-stdin
         
+        # Pull explicite des images d'application avec le bon tag pour forcer le téléchargement
+        echo \"📥 Pull explicite des images avec tag ${IMAGE_TAG}...\"
+        
+        # Pull explicite de chaque image avec le bon tag
+        for image_suffix in dealdealgenerator dealsecurity dealsetting dealtobook-deal-webui dealtobook-deal-website; do
+            image=\"ghcr.io/${GITHUB_USERNAME}/\${image_suffix}:${IMAGE_TAG}\"
+            echo \"  📥 Pull de \$image...\"
+            docker pull \"\$image\" || echo \"  ⚠️  Échec du pull de \$image (peut déjà être présent localement)\"
+        done
+        
+        # Ensuite, pull via docker-compose pour s'assurer que tout est synchronisé
         if [ '$BUILD_SPECIFIC_SERVICES' = 'true' ]; then
-            echo '🎯 Pull des images spécifiques:$services_to_pull'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env pull$services_to_pull
+            echo '🎯 Pull via docker-compose des services spécifiques:$services_to_pull'
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env pull$services_to_pull
         else
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env pull
+            echo '📥 Pull via docker-compose de tous les services...'
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env pull
         fi
     }" || warning "Erreur lors du pull des images"
     
@@ -518,38 +596,122 @@ start_services_on_hostinger() {
         # Démarrer les services
         if [ '$BUILD_SPECIFIC_SERVICES' = 'true' ]; then
             echo '🎯 Démarrage des services spécifiques:$services_list'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate$services_list
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always$services_list || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate$services_list
         else
             # Démarrage séquentiel des services pour éviter les conflits de dépendances
             echo '🚀 Démarrage séquentiel des services avec force-recreate...'
             
-            # Arrêter tous les services d'abord
-            echo '🛑 Arrêt des services existants...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env down --remove-orphans
+            # Arrêter tous les services d'abord et supprimer les conteneurs
+            echo '🛑 Arrêt et suppression des services existants...'
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env down --remove-orphans 2>/dev/null || true
+            # Forcer la suppression des conteneurs orphelins qui bloquent (compatible macOS/Linux)
+            for container in \$(docker ps -a --filter 'name=dealtobook-' --format '{{.Names}}' 2>/dev/null); do
+                [ -n \"\$container\" ] && docker rm -f \"\$container\" 2>/dev/null || true
+            done
+            sleep 2
             
-            # 1. Infrastructure de base
+            # 1. Infrastructure de base (uniquement les services actifs dans docker-compose)
             echo '📊 Démarrage de l infrastructure...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate postgres redis zipkin prometheus grafana
-            sleep 10
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always postgres zipkin || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate postgres zipkin
+            
+            # Attendre que PostgreSQL soit prêt
+            echo '⏳ Attente de PostgreSQL...'
+            for i in {1..30}; do
+                docker exec dealtobook-postgres pg_isready -U dealtobook >/dev/null 2>&1 && break
+                sleep 2
+            done
+            
+            # Vérifier et corriger les fichiers scripts (certains peuvent être des répertoires)
+            echo '🔍 Vérification des fichiers scripts...'
+            
+            # Si pg_hba.conf est un répertoire (bug précédent), le supprimer
+            if [ -d scripts/pg_hba.conf ]; then
+                echo '   ⚠️  scripts/pg_hba.conf est un RÉPERTOIRE, suppression...'
+                rm -rf scripts/pg_hba.conf
+                echo '   ℹ️  Le fichier sera recréé au prochain déploiement ou copié avec docker cp'
+            fi
+            
+            if [ -f scripts/pg_hba.conf ]; then
+                echo '   ✓ scripts/pg_hba.conf trouvé (fichier)'
+            elif [ -d scripts/pg_hba.conf ]; then
+                echo '   ❌ scripts/pg_hba.conf est toujours un répertoire après correction !'
+            else
+                echo '   ❌ scripts/pg_hba.conf NON TROUVÉ !'
+                echo '   📂 Contenu de scripts/:'
+                ls -la scripts/ 2>/dev/null | head -10
+            fi
+            
+            # APPLIQUER pg_hba.conf personnalisé depuis le serveur distant
+            echo '🔧 Application de pg_hba.conf personnalisé...'
+            # Si le fichier n'est pas monté, le copier directement depuis le serveur
+            if ! docker exec dealtobook-postgres test -f /tmp/pg_hba_custom.conf 2>/dev/null; then
+                echo '   ⚠️  /tmp/pg_hba_custom.conf non monté, copie depuis le serveur...'
+                if [ -f scripts/pg_hba.conf ]; then
+                    echo '   📋 Copie de scripts/pg_hba.conf vers le conteneur...'
+                    docker cp scripts/pg_hba.conf dealtobook-postgres:/tmp/pg_hba_custom.conf 2>/dev/null && \
+                        echo '   ✅ Fichier copié dans le conteneur' || \
+                        echo '   ❌ Échec de la copie manuelle'
+                elif [ -d scripts/pg_hba.conf ]; then
+                    echo '   ❌ scripts/pg_hba.conf est un répertoire, impossible de copier !'
+                    echo '   💡 Solution: Relancer le déploiement pour retransférer le fichier correctement'
+                else
+                    echo '   ❌ scripts/pg_hba.conf non trouvé sur le serveur'
+                fi
+            fi
+            
+            if docker exec dealtobook-postgres test -f /tmp/pg_hba_custom.conf 2>/dev/null; then
+                echo '   📋 Copie de pg_hba.conf personnalisé...'
+                docker exec dealtobook-postgres cp -f /tmp/pg_hba_custom.conf /var/lib/postgresql/data/pg_hba.conf 2>/dev/null || true
+                docker exec dealtobook-postgres chmod 600 /var/lib/postgresql/data/pg_hba.conf 2>/dev/null || true
+                echo '   🔄 Rechargement de la configuration PostgreSQL...'
+                docker exec dealtobook-postgres psql -U dealtobook -d postgres -c 'SELECT pg_reload_conf();' 2>/dev/null || \
+                    docker exec dealtobook-postgres psql -U postgres -d postgres -c 'SELECT pg_reload_conf();' 2>/dev/null || true
+                echo '   ✅ pg_hba.conf appliqué et rechargé'
+            else
+                echo '   ⚠️  Fichier /tmp/pg_hba_custom.conf non trouvé dans le conteneur'
+            fi
+            
+            # Créer la base de données Keycloak si elle n'existe pas (AVANT de démarrer Keycloak)
+            echo '🗄️  Vérification de la base de données Keycloak...'
+            docker exec dealtobook-postgres psql -U dealtobook -d postgres -c 'SELECT 1 FROM pg_database WHERE datname='\''keycloak'\'';' 2>/dev/null | grep -q 1 || \
+                docker exec dealtobook-postgres psql -U dealtobook -d postgres -c 'CREATE DATABASE keycloak;' 2>/dev/null || \
+                docker exec dealtobook-postgres psql -U postgres -c 'CREATE DATABASE keycloak;' 2>/dev/null || true
+            sleep 5
             
             # 2. Keycloak
             echo '🔐 Démarrage de Keycloak...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate keycloak
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always keycloak || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate keycloak
+            
+            # Vérifier que Keycloak démarre correctement
+            echo '⏳ Attente du démarrage de Keycloak...'
             sleep 15
+            if ! docker ps --filter 'name=dealtobook-keycloak' --format '{{.Names}}' | grep -q 'dealtobook-keycloak'; then
+                echo '⚠️  Keycloak n est pas démarré. Affichage des logs :'
+                docker logs dealtobook-keycloak --tail 50 2>&1 || true
+            else
+                echo '✅ Keycloak est démarré'
+            fi
+            sleep 5
             
             # 3. Services backend
             echo '⚙️ Démarrage des services backend...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate deal-generator deal-security deal-setting
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always deal-generator deal-security deal-setting || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate deal-generator deal-security deal-setting
             sleep 20
             
             # 4. Services frontend
             echo '🌐 Démarrage des services frontend...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate deal-webui deal-website
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always deal-webui deal-website || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate deal-webui deal-website
             sleep 10
             
             # 5. Nginx
             echo '🔄 Démarrage de Nginx...'
-            docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env up -d --force-recreate nginx
+            docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate --pull always nginx || \
+                docker-compose -f docker-compose.ssl-complete.yml --env-file .env up -d --force-recreate nginx
             
             echo '✅ Tous les services démarrés séquentiellement'
         fi
@@ -568,9 +730,9 @@ stop_services_on_hostinger() {
     
     if [ "$BUILD_SPECIFIC_SERVICES" = "true" ]; then
         log "🎯 Arrêt des services spécifiques:$services_list"
-        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env stop$services_list"
+        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env stop$services_list"
     else
-        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env stop"
+        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env stop"
     fi
     
     success "Services arrêtés"
@@ -584,9 +746,9 @@ restart_services_on_hostinger() {
     
     if [ "$BUILD_SPECIFIC_SERVICES" = "true" ]; then
         log "🎯 Redémarrage des services spécifiques:$services_list"
-        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env restart$services_list"
+        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env restart$services_list"
     else
-        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env restart"
+        run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env restart"
     fi
     
     success "Services redémarrés"
@@ -601,7 +763,7 @@ scale_services() {
     
     local mapped_service=$(map_service_name "$service")
     
-    run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env up -d --scale $mapped_service=$replicas"
+    run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env up -d --scale $mapped_service=$replicas"
     
     success "Service $service scaled to $replicas"
 }
@@ -616,7 +778,7 @@ exec_in_service() {
     
     local mapped_service=$(map_service_name "$service")
     
-    run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env exec -T $mapped_service $command"
+    run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env exec -T $mapped_service $command"
 }
 
 # Inspect service
@@ -629,13 +791,13 @@ inspect_service() {
     
     run_remote_cmd "cd /opt/${PROJECT_NAME} && {
         echo '=== Container Info ==='
-        docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env ps $mapped_service
+        docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env ps $mapped_service
         echo ''
         echo '=== Container Details ==='
-        docker inspect \$(docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env ps -q $mapped_service) 2>/dev/null || echo 'Container not running'
+        docker inspect \$(docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env ps -q $mapped_service) 2>/dev/null || echo 'Container not running'
         echo ''
         echo '=== Recent Logs (last 50 lines) ==='
-        docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs --tail=50 $mapped_service
+        docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env logs --tail=50 $mapped_service
     }"
 }
 
@@ -647,15 +809,96 @@ setup_databases() {
     sleep "$DB_READY_TIMEOUT"
     
     run_remote_cmd "cd /opt/${PROJECT_NAME} && {
-        docker exec ${PROJECT_NAME}-postgres psql -U dealtobook -d dealtobook_db -c 'CREATE DATABASE IF NOT EXISTS deal_setting;' 2>/dev/null || true
-        docker exec ${PROJECT_NAME}-postgres psql -U dealtobook -d dealtobook_db -c 'CREATE DATABASE IF NOT EXISTS keycloak;' 2>/dev/null || true
-        docker exec ${PROJECT_NAME}-postgres psql -U dealtobook -d dealtobook_db -c 'CREATE DATABASE IF NOT EXISTS deal_generator;' 2>/dev/null || true
+        # Le conteneur PostgreSQL s'appelle 'dealtobook-postgres' d'après le docker-compose
+        # Utiliser l'utilisateur 'dealtobook' (celui défini dans POSTGRES_USER)
+        # Attendre que PostgreSQL soit prêt
+        for i in {1..30}; do
+            docker exec dealtobook-postgres pg_isready -U dealtobook >/dev/null 2>&1 && break
+            sleep 2
+        done
         
-        echo 'Bases de données configurées'
+        # Vérifier et corriger les fichiers scripts (certains peuvent être des répertoires)
+        echo '🔍 Vérification des fichiers scripts...'
+        
+        # Si pg_hba.conf est un répertoire, le supprimer et le recréer comme fichier
+        if [ -d scripts/pg_hba.conf ]; then
+            echo '   ⚠️  scripts/pg_hba.conf est un RÉPERTOIRE (bug précédent), correction...'
+            rm -rf scripts/pg_hba.conf
+            # Le transfert précédent devrait l'avoir recréé comme fichier
+        fi
+        
+        if [ -f scripts/pg_hba.conf ]; then
+            echo '   ✓ scripts/pg_hba.conf trouvé (fichier)'
+        elif [ -d scripts/pg_hba.conf ]; then
+            echo '   ❌ scripts/pg_hba.conf est toujours un répertoire !'
+            ls -ld scripts/pg_hba.conf
+        else
+            echo '   ❌ scripts/pg_hba.conf NON TROUVÉ !'
+            echo '   📂 Contenu de scripts/:'
+            ls -la scripts/ 2>/dev/null | head -15
+        fi
+        
+        # APPLIQUER pg_hba.conf personnalisé depuis le serveur distant (double vérification)
+        echo '🔧 Application de pg_hba.conf personnalisé (après démarrage)...'
+        # Si le fichier n'est pas monté, le copier directement depuis le serveur
+        if ! docker exec dealtobook-postgres test -f /tmp/pg_hba_custom.conf 2>/dev/null; then
+            echo '   ⚠️  /tmp/pg_hba_custom.conf non monté, copie depuis le serveur...'
+            if [ -f scripts/pg_hba.conf ]; then
+                docker cp scripts/pg_hba.conf dealtobook-postgres:/tmp/pg_hba_custom.conf 2>/dev/null && \
+                    echo '   ✅ Fichier copié dans le conteneur' || \
+                    echo '   ❌ Échec de la copie manuelle'
+            else
+                echo '   ❌ scripts/pg_hba.conf non trouvé sur le serveur'
+            fi
+        fi
+        
+        if docker exec dealtobook-postgres test -f /tmp/pg_hba_custom.conf 2>/dev/null; then
+            echo '   📋 Copie de pg_hba.conf personnalisé...'
+            # Supprimer le fichier existant et recréer avec les bonnes permissions
+            docker exec dealtobook-postgres sh -c 'rm -f /var/lib/postgresql/data/pg_hba.conf && cp /tmp/pg_hba_custom.conf /var/lib/postgresql/data/pg_hba.conf && chmod 600 /var/lib/postgresql/data/pg_hba.conf && chown postgres:postgres /var/lib/postgresql/data/pg_hba.conf' 2>/dev/null || true
+            
+            # Vérifier les permissions
+            if docker exec dealtobook-postgres ls -l /var/lib/postgresql/data/pg_hba.conf 2>/dev/null | grep -q "postgres postgres"; then
+                echo '   ✅ Permissions correctes vérifiées'
+            else
+                echo '   ⚠️  Vérification des permissions du répertoire data...'
+                docker exec dealtobook-postgres sh -c 'chmod 700 /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data/pg_hba.conf' 2>/dev/null || true
+            fi
+            
+            echo '   🔄 Rechargement de la configuration PostgreSQL...'
+            # Attendre un peu avant le reload pour que PostgreSQL soit prêt
+            sleep 2
+            docker exec dealtobook-postgres psql -U dealtobook -d postgres -c 'SELECT pg_reload_conf();' 2>&1 | grep -v "could not open\|was not reloaded" || \
+                docker exec dealtobook-postgres psql -U postgres -d postgres -c 'SELECT pg_reload_conf();' 2>&1 | grep -v "could not open\|was not reloaded" || true
+            echo '   ✅ pg_hba.conf appliqué'
+        fi
+        
+        # Créer les bases de données si elles n'existent pas (idempotent - safe à lancer plusieurs fois)
+        echo '📦 Vérification des bases de données existantes...'
+        
+        # Créer les bases de données une par une avec une approche simple et directe
+        for db in dealtobook_db deal_setting deal_generator keycloak; do
+            echo \"  🔍 Vérification de la base \$db...\"
+            # Vérifier si la base existe
+            check_result=\$(docker exec dealtobook-postgres psql -U dealtobook -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='\''\$db'\''\" 2>/dev/null || echo '')
+            
+            if [ \"\$check_result\" = \"1\" ]; then
+                echo \"  ✓ Base \$db existe déjà\"
+            else
+                echo \"  + Création de la base \$db...\"
+                # Créer la base avec une commande SQL simple
+                docker exec dealtobook-postgres psql -U dealtobook -d postgres -c \"CREATE DATABASE \\\"\$db\\\" OWNER dealtobook;\" 2>/dev/null && \
+                    docker exec dealtobook-postgres psql -U dealtobook -d postgres -c \"GRANT ALL PRIVILEGES ON DATABASE \\\"\$db\\\" TO dealtobook;\" 2>/dev/null && \
+                    echo \"  ✅ Base \$db créée\" || \
+                    echo \"  ⚠️  Erreur lors de la création de \$db\"
+            fi
+        done
+        
+        echo '✅ Toutes les bases de données sont prêtes (idempotent)'
     }" || warning "Erreur lors de la configuration des bases de données"
     
     run_remote_cmd "cd /opt/${PROJECT_NAME} && {
-        docker-compose -f $DOCKER_COMPOSE_FILE --env-file .env restart deal-generator deal-security deal-setting
+        docker-compose -f docker-compose.ssl-complete.yml --env-file .env restart deal-generator deal-security deal-setting
         echo 'Services backend redémarrés'
     }" || warning "Erreur lors du redémarrage des services backend"
     
@@ -745,7 +988,7 @@ health_check() {
     
     run_remote_cmd "cd /opt/${PROJECT_NAME} && {
         echo '📊 Status des conteneurs :'
-        docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env ps
+        docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env ps
         
         echo -e '\n🧪 Health checks :'
         
@@ -873,6 +1116,7 @@ Usage: $0 {COMMAND} [services] [options]
 ⚙️ CONFIGURATION:
   ssl-setup          : Configurer les certificats SSL Let's Encrypt
   config             : Déployer uniquement la configuration
+  restore-backup <local_backup_dir> [--reset] : Restaurer une sauvegarde PostgreSQL Azure (option --reset pour drop/recreate)
 
 🎯 Services disponibles (optionnel) :
   Backend : deal_generator (generator), deal_security (security), deal_setting (setting)
@@ -961,10 +1205,12 @@ main() {
     local command="${1:-}"
     shift || true
     
-    # Parse services if provided
-    if [[ -n "${1:-}" ]] && [[ ! "$1" =~ ^- ]]; then
-        parse_services "$1"
-        shift || true
+    # Parse services if provided (skip for commands that do not accept services like restore-backup)
+    if [[ "$command" != "restore-backup" ]]; then
+        if [[ -n "${1:-}" ]] && [[ ! "$1" =~ ^- ]]; then
+            parse_services "$1"
+            shift || true
+        fi
     fi
     
     case "$command" in
@@ -1022,6 +1268,37 @@ main() {
             start_services_on_hostinger
             health_check
             ;;
+        restore-backup)
+            # Usage: restore-backup /path/to/local/backup-dir
+            check_prerequisites
+            local local_backup_dir="${1:-}"
+            local reset_opt="${2:-}"
+            if [ -z "$local_backup_dir" ] || [ ! -d "$local_backup_dir" ]; then
+                error "Usage: $0 restore-backup /chemin/vers/backup"
+            fi
+            log "🗂️  Préparation de la restauration depuis: $local_backup_dir"
+            # Créer répertoire sur le serveur
+            run_remote_cmd "mkdir -p /opt/${PROJECT_NAME}/backups && chmod 755 /opt/${PROJECT_NAME}/backups" || true
+            # Destination distante horodatée
+            local ts
+            ts=$(date +%Y%m%d-%H%M%S)
+            local remote_dir="/opt/${PROJECT_NAME}/backups/restore-${ts}"
+            run_remote_cmd "mkdir -p '$remote_dir'" || true
+            # Transférer les fichiers
+            log "📤 Transfert du backup vers le serveur..."
+            scp -r -o StrictHostKeyChecking=no "$local_backup_dir/" "${HOSTINGER_USER}@${HOSTINGER_IP}:$remote_dir/" || error "Transfert du backup échoué"
+            # Transférer le script de restauration
+            if [ -f "$CONFIG_DIR/scripts/restore-from-backup.sh" ]; then
+                scp -o StrictHostKeyChecking=no "$CONFIG_DIR/scripts/restore-from-backup.sh" "${HOSTINGER_USER}@${HOSTINGER_IP}:/opt/${PROJECT_NAME}/scripts/restore-from-backup.sh" || error "Transfert du script restore échoué"
+                run_remote_cmd "chmod +x /opt/${PROJECT_NAME}/scripts/restore-from-backup.sh" || true
+            else
+                error "Script restore-from-backup.sh introuvable dans $CONFIG_DIR/scripts"
+            fi
+            # Exécuter la restauration
+            log "🔁 Exécution de la restauration sur le serveur..."
+            run_remote_cmd "cd /opt/${PROJECT_NAME} && ./scripts/restore-from-backup.sh '$remote_dir' dealtobook-postgres dealtobook '${reset_opt}'" || error "Restauration échouée"
+            success "Restauration terminée"
+            ;;
         redeploy)
             log "🔄 Redéploiement rapide..."
             check_prerequisites
@@ -1051,7 +1328,7 @@ main() {
         down)
             log "⬇️ Arrêt et suppression des conteneurs..."
             check_prerequisites
-            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env down --remove-orphans"
+            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env down --remove-orphans"
             success "✅ Services arrêtés et supprimés"
             ;;
         pull)
@@ -1085,15 +1362,15 @@ main() {
             
             local services_list=$(get_mapped_services_list)
             if [[ "$BUILD_SPECIFIC_SERVICES" == "true" ]]; then
-                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs -f$services_list"
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env logs -f$services_list"
             else
-                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env logs -f"
+                run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env logs -f"
             fi
             ;;
         ps|list)
             log "📋 Liste des conteneurs..."
             check_prerequisites
-            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_FILE} --env-file .env ps"
+            run_remote_cmd "cd /opt/${PROJECT_NAME} && docker-compose -f ${DOCKER_COMPOSE_REMOTE} --env-file .env ps"
             ;;
         status)
             health_check

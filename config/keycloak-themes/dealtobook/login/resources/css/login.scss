@@ -1,0 +1,96 @@
+@import "./fonts";
+@import "./icons";
+@import "./palette";
+@import "./typography";
+@import "@material/button/mdc-button";
+@import "@material/card/mdc-card";
+@import "@material/checkbox/mdc-checkbox";
+@import "@material/form-field/mdc-form-field";
+@import "@material/list/mdc-list";
+@import "@material/textfield/mdc-text-field";
+@import "@material/typography/mdc-typography";
+
+// top, right, bottom, and left
+// width: 100vw;
+// height: 100vh;
+
+.mdc-text-field__icon {
+  padding-left: 12px !important;
+}
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+}
+
+.login-mdc, body {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+
+  background: url('../img/keycloak-bg.png') no-repeat center center fixed;
+  background-size: cover;
+  font-family: 'Open Sans', sans-serif;
+  font-weight: 200;
+  margin: 0;
+  padding-top: 0.1px; // Prevent header h1 margin from pushing body down
+}
+
+.login-page-mdc {
+}
+
+.divider-mdc {
+  // @extend .mdc-list-divider;
+
+  // padding-top: 16px;
+  // padding-bottom: 16px;
+  margin-top: 16px;
+  margin-bottom: 12px;
+}
+
+.registration-label-mdc {
+  text-align: center;
+}
+
+.card-mdc {
+  @extend .mdc-card;
+  padding: 10px 20px 20px 20px;
+  // By default, cards expand horizontally to fill all available space, and vertically to fit their contents.
+  width: 500px;
+}
+
+// https://material.io/design/layout/responsive-layout-grid.html#breakpoints
+
+@media (max-width: 480px) {
+  .login-page-mdc .card-mdc {
+    width: 100%;
+  }
+}
+
+.floating-label-mdc {
+  width: 100%;
+}
+
+// -- Misc -- //
+
+div.kc-logo-text {
+  visibility: hidden !important;
+}
+
+// ------------------------------------------------------------------------------------------------------------------ //
+
+.form-group {
+  padding-bottom: 16px;
+}
+
+@media (max-width: 480px) {
+  .floating-label-mdc {
+    // width: 50%;
+  }
+  .form-group {
+    padding-bottom: 8px;
+  }
+}
+//------------------------------------//
+//------------------------------------//
