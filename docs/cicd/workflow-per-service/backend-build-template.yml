@@ -31,7 +31,7 @@ env:
 
 jobs:
   build-and-push:
-    name: Build ${{ env.SERVICE_NAME }}
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
     
     steps:
@@ -68,19 +68,31 @@ jobs:
       
       - name: 🏷️ Tag Docker Images
         run: |
-          # Trouver l'image buildée par Jib
-          LOCAL_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "^(deal)" | head -n1)
-          echo "Local image: $LOCAL_IMAGE"
+          # L'image buildée par Jib utilise le nom complet depuis pom.xml
+          # On liste les images pour debug
+          echo "📦 Images Docker disponibles:"
+          docker images | head -5
           
-          # Tag avec le tag déterminé
-          docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
-          
+          # Utiliser directement l'image GHCR depuis la config Jib (pom.xml)
+          LOCAL_IMAGE="${{ env.GHCR_IMAGE }}:latest"
+          echo "🔍 Image locale utilisée: $LOCAL_IMAGE"
+
+          # Tag avec le tag déterminé (develop, latest, etc.)
+          if [ "${{ steps.tag.outputs.tag }}" != "latest" ]; then
+            echo "🏷️  Tag: ${{ steps.tag.outputs.tag }}"
+            docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          fi
+
           # Tag avec le SHA pour traçabilité
+          echo "🏷️  Tag SHA: sha-${{ github.sha }}"
           docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
-          
+
           # Tag avec la branche
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+          if [ "$BRANCH_TAG" != "latest" ]; then
+            echo "🏷️  Tag branche: $BRANCH_TAG"
+            docker tag $LOCAL_IMAGE ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+          fi
       
       - name: 🔐 Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -91,10 +103,24 @@ jobs:
       
       - name: 🚀 Push Docker Images to GHCR
         run: |
+          echo "📤 Push des images vers GHCR..."
+          
+          # Push tag principal (develop, latest, etc.)
+          echo "  → Push: ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}"
           docker push ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          
+          # Push tag SHA
+          echo "  → Push: ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}"
           docker push ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          
+          # Push tag branche
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          docker push ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+          if [ "$BRANCH_TAG" != "${{ steps.tag.outputs.tag }}" ]; then
+            echo "  → Push: ${{ env.GHCR_IMAGE }}:$BRANCH_TAG"
+            docker push ${{ env.GHCR_IMAGE }}:$BRANCH_TAG
+          fi
+          
+          echo "✅ Tous les tags poussés avec succès!"
       
       - name: 📊 Summary
         run: |
