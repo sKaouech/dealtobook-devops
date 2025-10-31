@@ -232,7 +232,14 @@ check_prerequisites() {
     fi
     
     # Check required tools
-    local required_tools=("docker" "docker-compose" "ssh" "scp")
+    # En CI/CD, on n'a besoin que de ssh/scp (docker/docker-compose sont sur le serveur)
+    if [[ "${CI:-false}" == "true" ]] || [[ "${GITHUB_ACTIONS:-false}" == "true" ]] || [[ "${SKIP_JAVA_CHECK:-false}" == "true" ]]; then
+        local required_tools=("ssh" "scp")
+        info "🔧 CI/CD mode: vérifie uniquement ssh/scp (docker sera utilisé sur le serveur distant)"
+    else
+        local required_tools=("docker" "docker-compose" "ssh" "scp")
+    fi
+    
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
             error "$tool n'est pas installé"
