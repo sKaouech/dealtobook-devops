@@ -62,14 +62,20 @@ jobs:
         env:
           HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
           HOSTINGER_IP: ${{ secrets.HOSTINGER_IP }}
+          DEPLOY_ENV: ${{ github.event.inputs.environment }}
           IMAGE_TAG: ${{ github.event.inputs.image-tag }}
           SERVICES: ${{ steps.prepare.outputs.services }}
+          SKIP_JAVA_CHECK: "true"
+          GITHUB_ACTIONS: "true"
         run: |
           cd scripts
           chmod +x deploy-ssl-production-v2.sh
           
+          export DEPLOY_ENV="${{ github.event.inputs.environment }}"
           export IMAGE_TAG="${{ github.event.inputs.image-tag }}"
+          export SKIP_JAVA_CHECK="true"
           
+          echo "🚀 Deploying to environment: $DEPLOY_ENV"
           echo "🚀 Deploying services: $SERVICES with tag: $IMAGE_TAG"
           ./deploy-ssl-production-v2.sh deploy $SERVICES
       

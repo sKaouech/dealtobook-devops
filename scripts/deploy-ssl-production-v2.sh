@@ -223,8 +223,13 @@ check_prerequisites() {
     local skip_ssh=${1:-false}
     log "🔍 Vérification des prérequis..."
     
-    # Setup Java 17 first
-    setup_java17
+    # Setup Java 17 only if we're building locally (not in CI/CD)
+    # Skip Java check if running from GitHub Actions or if SKIP_JAVA_CHECK is set
+    if [[ "${CI:-false}" == "true" ]] || [[ "${GITHUB_ACTIONS:-false}" == "true" ]] || [[ "${SKIP_JAVA_CHECK:-false}" == "true" ]]; then
+        info "⏭️  Skip Java check (running in CI/CD or SKIP_JAVA_CHECK is set)"
+    else
+        setup_java17
+    fi
     
     # Check required tools
     local required_tools=("docker" "docker-compose" "ssh" "scp")
